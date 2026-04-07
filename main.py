@@ -3,7 +3,6 @@ import os
 from torch.cuda.amp import GradScaler
 import datetime
 import argparse
-from tqdm import tqdm
 
 from train_tools import train_epoch, evaluate_loader, test_final
 from my_tools import (
@@ -41,7 +40,7 @@ def parse_args():
     parser.add_argument("--dp", type=float, default=0.5, help="drop out")
     parser.add_argument("--hard", type=int, default=80, help="hard ratio (%) for mask")
     parser.add_argument("--rg", type=int, default=999, help="re-gen data epoch")
-    parser.add_argument("--max_epoch", type=int, default=400, help="max train epoch")
+    parser.add_argument("--max_epoch", type=int, default=100, help="max train epoch")
     parser.add_argument(
         "--mix_test", action="store_true", default=False, help="是否混入测试集训练"
     )
@@ -53,9 +52,7 @@ def parse_args():
         default=False,
         help="是否使用可学习的 emb",
     )
-    parser.add_argument(
-        "--model", type=str, default="ModernTCN", help="backbone 模型选择"
-    )
+    parser.add_argument("--model", type=str, default="bilstm", help="backbone 模型选择")
     parser.add_argument(
         "--manual", action="store_true", default=False, help="是否手动构建交织"
     )
