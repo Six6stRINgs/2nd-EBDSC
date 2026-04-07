@@ -1,16 +1,19 @@
 import torch
-import torch.utils.data as Data
+import os
+from torch.cuda.amp import GradScaler
 import datetime
 import argparse
-from train_tools import fit, test_final
+from tqdm import tqdm
 
-# Explicit imports
-from mix_data_pos import read_dfs, split_label, PosMixDatasetCache
+from train_tools import train_epoch, evaluate_loader, test_final
 from my_tools import (
     seed_everything,
+    save_checkpoint,
+    plot_loss,
 )
 
-import os
+from data import build_dataloaders
+from models import build_model
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -51,7 +54,7 @@ def parse_args():
         help="是否使用可学习的 emb",
     )
     parser.add_argument(
-        "--model", type=str, default="modernTCN", help="backbone 模型选择"
+        "--model", type=str, default="ModernTCN", help="backbone 模型选择"
     )
     parser.add_argument(
         "--manual", action="store_true", default=False, help="是否手动构建交织"
@@ -67,170 +70,6 @@ def parse_args():
     )
 
     return parser.parse_args()
-
-
-def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
-    df_list, test_df_list = read_dfs()
-    test_df_split_list = (
-        [split_label(i) for i in test_df_list] if parser_args.mix_test else None
-    )
-
-    # Train / Valid Base
-    d_train_base = PosMixDatasetCache(
-        df_list,
-        100,
-        100,
-        is_test=False,
-        if_mix_test=parser_args.mix_test,
-        test_df_split_list=test_df_split_list,
-        **to_dict_params,
-    )
-    d_valid_base = PosMixDatasetCache(
-        df_list,
-        20,
-        50,
-        is_test=False,
-        if_mix_test=parser_args.mix_test,
-        test_df_split_list=test_df_split_list,
-        **to_dict_params,
-    )
-
-    training_loader = Data.DataLoader(
-        MyDataSet(d_train_base, hard=parser_args.hard * 0.01, f_mask=F_MASK),
-        batch_size=parser_args.batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-    )
-    validing_loader = Data.DataLoader(
-        MyDataSet(d_valid_base, hard=None),
-        batch_size=parser_args.batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-    )
-
-    # Test Loaders
-    d_test_base = PosMixDatasetCache(test_df_list, is_sequential=True, **to_dict_params)
-    testing_loader = Data.DataLoader(
-        MyDataSet(d_test_base, hard=None),
-        batch_size=parser_args.batch_size,
-        shuffle=True,
-    )
-
-    d_test_mini_base = PosMixDatasetCache(
-        test_df_list[2], 20, 50, is_test=True, **to_dict_params
-    )
-    testing_loader_mini = Data.DataLoader(
-        MyDataSet(d_test_mini_base, hard=None),
-        batch_size=parser_args.batch_size,
-        shuffle=True,
-    )
-
-    return training_loader, validing_loader, testing_loader, testing_loader_mini
-
-
-def build_model(parser_args, device, NAME):
-    D = 128
-    learning_rate = 4e-3
-    optimizer = None
-    lr_scheduler = None
-
-    if parser_args.model == "modernTCN":
-        NAME = f"TCN_{parser_args.ls}KS{parser_args.ss}_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        from ModernTCN import ModernTCNnew
-
-        model = ModernTCNnew(
-            INPUT_CHANNELS,
-            TAG_LEN,
-            D=D,
-            ffn_ratio=parser_args.ratio,
-            num_layers=parser_args.num_layers,
-            large_sizes=parser_args.ls,
-            small_size=parser_args.ss,
-            backbone_dropout=0.0,
-            head_dropout=parser_args.dp,
-            stem=parser_args.learnable_emb,
-        ).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=50 // max(parser_args.batch_size // 50, 1), gamma=0.5
-        )
-
-    elif parser_args.model == "Transformer":
-        from models.Transformer import Model, Configs
-
-        configs = Configs()
-        configs.e_layers = parser_args.num_layers
-        configs.dropout = parser_args.dp
-        if not parser_args.learnable_emb:
-            D = 128 * 5
-            configs.d_model = D
-            configs.d_ff = D * parser_args.ratio
-            configs.n_heads = 4
-            NAME = f"TF_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-            model = Model(configs=configs, wide_value_emb=True).to(device)
-        else:
-            D = 128 * 2
-            configs.d_model = D
-            configs.d_ff = D * parser_args.ratio
-            configs.n_heads = 2
-            NAME = f"TF_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-            model = Model(configs=configs, wide_value_emb=False).to(device)
-
-        learning_rate = 0.0
-        optimizer = torch.optim.RAdam(model.parameters(), lr=learning_rate)
-        lr_lambda = lambda step: (D**-0.5) * min(
-            (step + 1) ** -0.5, (step + 1) * 50**-1.5
-        )
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    elif parser_args.model == "iTransformer":
-        assert (
-            parser_args.learnable_emb == True
-        ), "iTransformer 模型必须使用可学习的 emb. TODO"
-        D = 128 * 2
-        NAME = f"iTransformer_{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        from models.iTransformer import Model, Configs
-
-        configs = Configs()
-        configs.d_model = D
-        configs.e_layers = parser_args.num_layers
-        configs.d_ff = configs.d_model * parser_args.ratio
-        configs.dropout = parser_args.dp
-
-        model = Model(configs=configs, wide_value_emb=False).to(device)
-        learning_rate = 0.0
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-        lr_lambda = lambda step: (D**-0.5) * min(
-            (step + 1) ** -0.5, (step + 1) * 50**-1.5
-        )
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    elif parser_args.model == "TimesNet":
-        assert (
-            parser_args.learnable_emb == True
-        ), "TimesNet 模型必须使用可学习的 emb. TODO"
-        NAME = f"TimesNet_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        from models.TimesNet import Model, Configs
-
-        configs = Configs()
-        configs.d_model = D
-        configs.e_layers = parser_args.num_layers
-        configs.d_ff = D * parser_args.ratio
-        configs.dropout = parser_args.dp
-
-        model = Model(configs=configs, wide_value_emb=False).to(device)
-        learning_rate = 0.001
-        optimizer = torch.optim.RAdam(model.parameters(), lr=learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=50, gamma=0.1
-        )
-
-    else:
-        raise ValueError("model 选择错误")
-
-    return model, optimizer, lr_scheduler, NAME, learning_rate
 
 
 def main():
@@ -268,9 +107,9 @@ def main():
 
     if parser_args.learnable_emb:
         NAME = NAME + "_LEmb"
-        from my_datastes import MyDataSet_woEmb as MyDataSet
+        from data.my_datastes import MyDataSet_woEmb as MyDataSet
     else:
-        from my_datastes import MyDataSet
+        from data.my_datastes import MyDataSet
 
     model, optimizer, lr_scheduler, NAME, learn_rate = build_model(
         parser_args, device, NAME
@@ -280,46 +119,84 @@ def main():
         build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet)
     )
 
-    loss_record = fit(
+    # --- 训练核心逻辑 (取代 fit) ---
+    scaler = GradScaler()
+    loss_record = {"train": [], "vaild": [], "test": [], "acc": []}
+    test_loss_min = 10.0
+    epoch_start = 0
+
+    print(
+        f"参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad)} 层数：{parser_args.num_layers}"
+    )
+    print(f"{NAME} start train at {now}")
+
+    for epoch in range(epoch_start, epoch_start + parser_args.max_epoch):
+        train_loss = train_epoch(
+            model, optimizer, training_loader, device, scaler, epoch
+        )
+
+        lr_scheduler.step()
+        loss_record["train"].append(train_loss)
+
+        if epoch % parser_args.rg == 0 and epoch != 0:
+            training_loader.dataset.hard = parser_args.hard * 0.01
+            training_loader.dataset.base_dataset.regen_data()
+            validing_loader.dataset.base_dataset.regen_data()
+
+        v_loss, t_loss, t_acc = evaluate_loader(
+            model, validing_loader, testing_loader_mini, device
+        )
+        loss_record["vaild"].append(v_loss)
+        loss_record["test"].append(t_loss)
+        loss_record["acc"].append(t_acc)
+        plot_loss(loss_record, f"{NAME}_{now}")
+
+        if test_loss_min > t_loss:
+            test_loss_min = t_loss
+            print(
+                f"Epoch {epoch} best test loss: {test_loss_min:.4f}, acc: {t_acc:.4f}"
+            )
+            save_checkpoint(
+                epoch,
+                loss_record,
+                model,
+                optimizer,
+                f"./saved_models/{NAME}_{now}_mloss.pth",
+            )
+
+        print(
+            f"Epoch {epoch+1}/{parser_args.max_epoch} - loss: {train_loss:.4f}, v_loss: {v_loss:.4f}, t_mini_loss: {t_loss:.4f}, t_mini_acc: {t_acc:.4f}"
+        )
+
+        # 5. 定期保存
+        if epoch % 50 == 49:
+            save_checkpoint(
+                epoch, loss_record, model, optimizer, f"./saved_models/{NAME}_{now}.pth"
+            )
+
+    print("Finished Training")
+    save_checkpoint(
+        epoch,
+        loss_record,
         model,
         optimizer,
-        lr_scheduler,
-        training_loader,
-        validing_loader,
-        testing_loader_mini,
-        parser_args,
-        device,
-        NAME,
+        f"./saved_models/{NAME}_{now}_cp-{epoch}.pth",
     )
+    plot_loss(loss_record, f"{NAME}_{now}")
 
+    # --- 最终评估 ---
     print(f"learn_rate={learn_rate} batch_size={parser_args.batch_size}")
     if loss_record["train"]:
         print(
-            "训练集损失：",
-            loss_record["train"][-1],
-            "验证集损失：",
-            loss_record["vaild"][-1],
-            "测试集损失：",
-            loss_record["test"][-1],
+            f"Final Train Loss: {loss_record['train'][-1]:.4f}, Valid Loss: {v_loss:.4f}, Test Mini Loss: {t_loss:.4f}"
         )
-    print(
-        "训练集样本数：",
-        len(training_loader.dataset),
-        "验证集样本数：",
-        len(validing_loader.dataset),
-    )
-    print(
-        "训练集批次数：", len(training_loader), "验证集批次数：", len(validing_loader)
-    )
-    print("模型信息：", model)
-    print("优化器信息：", optimizer)
 
     loaders_dict = {
         "valid": validing_loader,
         "test_mini": testing_loader_mini,
         "test_full": testing_loader,
     }
-    test_final(model, loaders_dict, device, NAME)
+    test_final(model, loaders_dict, device, NAME, now)
     torch.cuda.empty_cache()
 
 

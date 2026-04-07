@@ -2,12 +2,10 @@ import numpy as np
 from tqdm import tqdm
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import autocast
 
 # Explicit imports
 from my_tools import (
-    save_checkpoint,
-    plot_loss,
     confusion_matrix,
     accuracy_score,
 )
@@ -17,45 +15,18 @@ def criterion(outputs: torch.FloatTensor, targets: torch.FloatTensor):
     return nn.CrossEntropyLoss()(outputs.view(-1, 12), targets.view(-1))
 
 
-def evaluate_loader(model, dataloader, device, return_preds=False):
-    """通用的单 loader 验证/测试接口，返回 loss 和 acc"""
-    model.eval()
-    loss = 0.0
-    predictions = []
-    targets = []
-
-    with torch.no_grad():
-        for data, target in dataloader:
-            data = data.to(device)
-            target = target.to(device)
-            output = model(data)
-
-            preds = torch.argmax(output.view(-1, 12), dim=-1).detach().cpu().numpy()
-            predictions.append(preds)
-            targets.append(target.view(-1).detach().cpu().numpy())
-
-            loss += criterion(output, target).item()
-
-    loss /= max(len(dataloader), 1)
-    if not predictions:
-        if return_preds:
-            return loss, 0.0, np.array([]), np.array([])
-        return loss, 0.0
-
-    predictions = np.concatenate(predictions)
-    targets = np.concatenate(targets)
-    acc = accuracy_score(targets, predictions)
-
-    if return_preds:
-        return loss, acc, predictions, targets
-    return loss, acc
-
-
-def train_epoch(model, optimizer, training_loader, device, scaler):
-    """单周期训练过程"""
+def train_epoch(model, optimizer, training_loader, device, scaler, epoch_idx):
+    """单周期训练过程，包含 Batch 级别的 tqdm 进度条"""
     model.train()
     running_loss = 0.0
-    for i, data in enumerate(training_loader):
+    pbar = tqdm(
+        enumerate(training_loader),
+        total=len(training_loader),
+        desc=f"Epoch {epoch_idx}",
+        leave=False,
+        dynamic_ncols=True,
+    )
+    for i, data in pbar:
         inputs, labels = data[0].to(device), data[-1].to(device)
         optimizer.zero_grad()
 
@@ -68,124 +39,52 @@ def train_epoch(model, optimizer, training_loader, device, scaler):
         scaler.update()
 
         running_loss += loss.item()
+        pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
     return running_loss / len(training_loader)
 
 
-def evaluate_epoch(model, validing_loader, testing_loader_mini, device):
-    """单周期验证过程"""
-    v_loss, v_acc = evaluate_loader(model, validing_loader, device)
-    t_loss, t_acc = evaluate_loader(model, testing_loader_mini, device)
-    return v_loss, t_loss, t_acc
-
-
-def fit(
-    model,
-    optimizer,
-    lr_scheduler,
-    training_loader,
-    validing_loader,
-    testing_loader_mini,
-    parser_args,
-    device,
-    NAME,
-):
-    """标准化训练管线编排 (Epoch 循环)"""
-    scaler = GradScaler()
-    loss_record = {"train": [], "vaild": [], "test": [], "acc": []}
-    epoch_start = 0
-    test_loss_min = 2.0
-
-    print(
-        "参数量：",
-        sum(p.numel() for p in model.parameters() if p.requires_grad),
-        end=" ",
-    )
-    print(NAME, "start train:", epoch_start)
-
-    l = tqdm(
-        range(epoch_start, epoch_start + parser_args.max_epoch), dynamic_ncols=True
-    )
-    for epoch in l:
-        # 重生成数据集
-        if epoch % parser_args.rg == 0 and epoch != 0:
-            training_loader.dataset.hard = parser_args.hard * 0.01
-            training_loader.dataset.base_dataset.regen_data()
-            validing_loader.dataset.base_dataset.regen_data()
-
-        # [Eval Step]
-        v, t, a = evaluate_epoch(model, validing_loader, testing_loader_mini, device)
-        loss_record["vaild"].append(v)
-        loss_record["test"].append(t)
-        loss_record["acc"].append(a)
-        plot_loss(loss_record, f"{NAME}_{now}")
-
-        # 保存最优模型
-        if test_loss_min > loss_record["test"][-1]:
-            test_loss_min = loss_record["test"][-1]
-            print(
-                f'Epoch {epoch} test loss min {test_loss_min}, acc {loss_record["acc"][-1]}'
-            )
-            save_checkpoint(
-                epoch,
-                loss_record,
-                model,
-                optimizer,
-                f"./saved_models/{NAME}_{now}_mloss.pth",
-            )
-
-        # [Train Step]
-        train_loss = train_epoch(model, optimizer, training_loader, device, scaler)
-
-        lr_scheduler.step()
-        loss_record["train"].append(train_loss)
-
-        l.set_description(
-            "E%d, loss=%.3f, vaild=%.3f, test=%.3f, acc=%.2f"
-            % (
-                epoch + 1,
-                train_loss,
-                loss_record["vaild"][-1],
-                loss_record["test"][-1],
-                loss_record["acc"][-1],
-            )
-        )
-
-        if epoch % 50 == 49:
-            save_checkpoint(
-                epoch, loss_record, model, optimizer, f"./saved_models/{NAME}_{now}.pth"
-            )
-
-    print("Finished Training")
-    save_checkpoint(
-        epoch,
-        loss_record,
-        model,
-        optimizer,
-        f"./saved_models/{NAME}_{now}_cp-{epoch}.pth",
-    )
-    plot_loss(loss_record, f"{NAME}_{now}")
-    return loss_record
-
-
-def evaluate_loader(model, dataloader, device, criterion, return_preds=False):
+def evaluate_epoch(model, dataloader, device, criterion, return_preds=False):
     """通用的单 loader 验证/测试接口，返回 loss 和 acc (以及 可选的 predictions, targets)"""
     model.eval()
     loss = 0.0
+    correct_total = 0
+    sample_total = 0
     predictions = []
     targets = []
 
     with torch.no_grad():
-        for data, target in dataloader:
-            data = data.to(device)
-            target = target.to(device)
-            output = model(data)
+        pbar = tqdm(
+            enumerate(dataloader),
+            total=len(dataloader),
+            desc=f"Evaluate",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for i, data in pbar:
+            inputs, labels = data[0].to(device), data[-1].to(device)
+            output = model(inputs)
 
-            preds = torch.argmax(output.view(-1, 12), dim=-1).detach().cpu().numpy()
+            # 计算准确率
+            batch_preds_raw = torch.argmax(output.view(-1, 12), dim=-1)
+            batch_labels_raw = labels.view(-1)
+            correct_total += (batch_preds_raw == batch_labels_raw).sum().item()
+            sample_total += batch_labels_raw.numel()
+
+            # 存储以进行最终统计
+            preds = batch_preds_raw.detach().cpu().numpy()
             predictions.append(preds)
-            targets.append(target.view(-1).detach().cpu().numpy())
+            targets.append(batch_labels_raw.detach().cpu().numpy())
 
-            loss += criterion(output, target).item()
+            batch_loss = criterion(output, labels).item()
+            loss += batch_loss
+
+            pbar.set_postfix(
+                {
+                    "avg_loss": f"{loss / (i + 1):.4f}",
+                    "acc": f"{correct_total / sample_total:.4f}",
+                }
+            )
 
     loss /= len(dataloader)
     if not predictions:
@@ -202,15 +101,24 @@ def evaluate_loader(model, dataloader, device, criterion, return_preds=False):
     return loss, acc
 
 
-def test_final(model, loaders_dict, device, NAME):
+def evaluate_loader(model, validing_loader, testing_loader_mini, device):
+    """单周期验证过程"""
+    v_loss, v_acc = evaluate_epoch(model, validing_loader, device, criterion)
+    t_loss, t_acc = evaluate_epoch(model, testing_loader_mini, device, criterion)
+    return v_loss, t_loss, t_acc
+
+
+def test_final(model, loaders_dict, device, NAME, now):
     """训练完成后的最终验证过程"""
-    checkpoint = torch.load(f"./saved_models/{NAME}_{now}_mloss.pth")
+    path = f"./saved_models/{NAME}_{now}_mloss.pth"
+    print(f"Loading best model from {path} for final evaluation...")
+    checkpoint = torch.load(path)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
 
     for name, loader in loaders_dict.items():
-        loss, acc, preds, targets = evaluate_loader(
-            model, loader, device, return_preds=True
+        loss, acc, preds, targets = evaluate_epoch(
+            model, loader, device, criterion, return_preds=True
         )
-        print(f"[{name}] Average loss: {loss:.4f}, Acc: {acc:.4f}")
+        print(f"[{name}] Final Average loss: {loss:.4f}, Acc: {acc:.4f}")
         confusion_matrix(preds, targets, f"{NAME}_{now}_{name}_mloss{loss:.3f}")

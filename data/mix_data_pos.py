@@ -304,7 +304,18 @@ class PosMixDatasetCache(Data.Dataset):
     底层数据采样与重生成的 Dataset 缓存封装
     封装了 mix_data_gen / target_domain_data_gen ，自动完成数据并行构建和 Tensor 转换。
     """
-    def __init__(self, df_list, size_1=0, size_2=0, is_test=False, is_sequential=False, if_mix_test=False, test_df_split_list=None, **to_dict_kwargs):
+
+    def __init__(
+        self,
+        df_list,
+        size_1=0,
+        size_2=0,
+        is_test=False,
+        is_sequential=False,
+        if_mix_test=False,
+        test_df_split_list=None,
+        **to_dict_kwargs,
+    ):
         super().__init__()
         self.df_list = df_list
         self.size_1 = size_1
@@ -314,7 +325,7 @@ class PosMixDatasetCache(Data.Dataset):
         self.if_mix_test = if_mix_test
         self.test_df_split_list = test_df_split_list
         self.to_dict_kwargs = to_dict_kwargs
-        
+
         self.inputs = None
         self.targets = None
         self.regen_data()
@@ -325,21 +336,35 @@ class PosMixDatasetCache(Data.Dataset):
             windows = []
             for df in self.df_list:
                 for i in range(0, df.shape[0] - WINDOW_SIZE, WINDOW_SIZE):
-                    m2, m3 = to_dict(df[i:i+WINDOW_SIZE], reshap=False, **self.to_dict_kwargs)
+                    m2, m3 = to_dict(
+                        df[i : i + WINDOW_SIZE], reshap=False, **self.to_dict_kwargs
+                    )
                     windows.append([m2, m3])
         elif self.is_test:
             # 目标域抽样测试数据
-            assert not isinstance(self.df_list, list) or isinstance(self.df_list, pd.DataFrame), "is_test assumes a single DataFrame df_list"
-            windows = target_domain_data_gen(self.df_list, self.size_1, self.size_2, **self.to_dict_kwargs)
+            assert not isinstance(self.df_list, list) or isinstance(
+                self.df_list, pd.DataFrame
+            ), "is_test assumes a single DataFrame df_list"
+            windows = target_domain_data_gen(
+                self.df_list, self.size_1, self.size_2, **self.to_dict_kwargs
+            )
         else:
             # 训练/验证随机抽样打乱数据
             t_list = self.test_df_split_list if self.if_mix_test else None
-            windows = mix_data_gen(self.df_list, self.size_1, self.size_2, n_jobs=-1, if_time_reshap=True, test_df_split_list=t_list, **self.to_dict_kwargs)
-        
+            windows = mix_data_gen(
+                self.df_list,
+                self.size_1,
+                self.size_2,
+                n_jobs=-1,
+                if_time_reshap=True,
+                test_df_split_list=t_list,
+                **self.to_dict_kwargs,
+            )
+
         self.inputs, self.targets = make_data(windows)
 
     def __len__(self):
         return len(self.inputs) if self.inputs is not None else 0
-        
+
     def __getitem__(self, idx):
         return self.inputs[idx], self.targets[idx]
