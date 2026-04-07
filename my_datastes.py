@@ -6,10 +6,9 @@ import numpy as np
 class MyDataSet(Data.Dataset):
     """自定义数据集函数"""
 
-    def __init__(self, inputs, targets, hard=None, pos_d=128, if_emb=True, f_mask=lambda x: torch.rand_like(x) * 2 - 1):
+    def __init__(self, base_dataset, hard=None, pos_d=128, if_emb=True, f_mask=lambda x: torch.rand_like(x) * 2 - 1):
         super(MyDataSet, self).__init__()
-        self.inputs = inputs
-        self.targets = targets
+        self.base_dataset = base_dataset
         
         if not if_emb:
             return
@@ -35,23 +34,19 @@ class MyDataSet(Data.Dataset):
         self.f_mask = f_mask
         
     def __len__(self):
-        return self.inputs.shape[0]
+        return len(self.base_dataset)
 
     def __getitem__(self, idx):
+        inputs, target = self.base_dataset[idx]
         
         if not hasattr(self, 'd_model'):
-            inputs = self.inputs[idx]
             # 除第一个维度，每一个维度正则化
-            inputs = (inputs - inputs.mean(axis=0)) / inputs.std(axis=0)
-            inputs[:, 0] = ( self.inputs[idx][:, 0] / 5e5  - 0.0002) / 0.0005
-            # inputs = self.inputs[idx] / 65536 # old use
-            # inputs = self.inputs[idx]
-            # # !!! input[:, 0] = label
-            # inputs[:, 0] = self.targets[idx][:, 0]
-            return inputs, self.targets[idx]
+            inputs = (inputs - inputs.mean(axis=0)) / (inputs.std(axis=0) + 1e-8)
+            inputs[:, 0] = ( inputs[:, 0] / 5e5  - 0.0002) / 0.0005
+            return inputs, target
 
         # * POS [1024, 5] -> [1024, 5, 128]
-        positions: torch.FloatTensor = self.inputs[idx]  # [1024, 5]
+        positions: torch.FloatTensor = inputs  # [1024, 5]
         win_size, input_channels = positions.size()
         pe = torch.zeros(win_size, input_channels, self.d_model)
 
@@ -87,7 +82,7 @@ class MyDataSet(Data.Dataset):
                 mask_d_min = np.random.randint(self.d_mod(6), self.d_mod(14))
                 pe[:, 4, mask_d_min:] = self.f_mask(pe[:, 4, mask_d_min:])
 
-        return pe, self.targets[idx]
+        return pe, target
 
 
 class MyDataSet_woEmb(MyDataSet):

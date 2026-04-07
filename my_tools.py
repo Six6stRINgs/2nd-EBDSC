@@ -175,6 +175,5 @@ def load_pretrained_params(model: torch.nn.Module, path='./my_models/tf_s_2time5
                        v in pretrained_dict.items() if k in model_dict}
     # 2. overwrite entries in the existing state dict
     model_dict.update(pretrained_dict)
-    # 3. load the new state dict
     model.load_state_dict(pretrained_dict, strict=False)
     return model
