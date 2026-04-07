@@ -44,6 +44,18 @@ def parse_args():
     parser.add_argument(
         "--mix_test", action="store_true", default=False, help="是否混入测试集训练"
     )
+    parser.add_argument("--d_model", type=int, default=128, help="dimension of model")
+    parser.add_argument("--n_heads", type=int, default=8, help="num of heads")
+    parser.add_argument("--d_ff", type=int, default=None, help="dimension of ffn")
+    parser.add_argument("--lr", type=float, default=4e-3, help="learning rate")
+    parser.add_argument(
+        "--optimizer", type=str, default="adamw", help="optimizer type"
+    )
+    parser.add_argument(
+        "--scheduler", type=str, default="step", help="scheduler type"
+    )
+    parser.add_argument("--step_size", type=int, default=50, help="step size for scheduler")
+    parser.add_argument("--gamma", type=float, default=0.5, help="gamma for scheduler")
 
     # 对照、消融实验的一些参数
     parser.add_argument(
@@ -66,12 +78,15 @@ def parse_args():
         help="mask 方式 r: randMask, m: meanMask, c: constMask",
     )
 
+    parser.add_argument("--seed", type=int, default=3407, help="random seed")
+    parser.add_argument("--num_workers", type=int, default=4, help="number of workers for dataloader")
+
     return parser.parse_args()
 
 
 def main():
-    seed_everything()
     parser_args = parse_args()
+    seed_everything(parser_args.seed)
 
     use_cuda = True
     device = torch.device(

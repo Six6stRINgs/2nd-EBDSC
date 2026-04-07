@@ -34,14 +34,14 @@ def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
         MyDataSet(d_train_base, hard=parser_args.hard * 0.01, f_mask=F_MASK),
         batch_size=parser_args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=parser_args.num_workers,
         pin_memory=True,
     )
     validing_loader = Data.DataLoader(
         MyDataSet(d_valid_base, hard=None),
         batch_size=parser_args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=parser_args.num_workers,
         pin_memory=True,
     )
 
