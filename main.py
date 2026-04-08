@@ -48,13 +48,11 @@ def parse_args():
     parser.add_argument("--n_heads", type=int, default=8, help="num of heads")
     parser.add_argument("--d_ff", type=int, default=None, help="dimension of ffn")
     parser.add_argument("--lr", type=float, default=4e-3, help="learning rate")
+    parser.add_argument("--optimizer", type=str, default="adamw", help="optimizer type")
+    parser.add_argument("--scheduler", type=str, default="step", help="scheduler type")
     parser.add_argument(
-        "--optimizer", type=str, default="adamw", help="optimizer type"
+        "--step_size", type=int, default=50, help="step size for scheduler"
     )
-    parser.add_argument(
-        "--scheduler", type=str, default="step", help="scheduler type"
-    )
-    parser.add_argument("--step_size", type=int, default=50, help="step size for scheduler")
     parser.add_argument("--gamma", type=float, default=0.5, help="gamma for scheduler")
 
     # 对照、消融实验的一些参数
@@ -64,7 +62,9 @@ def parse_args():
         default=False,
         help="是否使用可学习的 emb",
     )
-    parser.add_argument("--model", type=str, default="bilstm", help="backbone 模型选择")
+    parser.add_argument(
+        "--model", type=str, default="moderntcn", help="backbone 模型选择"
+    )
     parser.add_argument(
         "--manual", action="store_true", default=False, help="是否手动构建交织"
     )
@@ -79,7 +79,10 @@ def parse_args():
     )
 
     parser.add_argument("--seed", type=int, default=3407, help="random seed")
-    parser.add_argument("--num_workers", type=int, default=4, help="number of workers for dataloader")
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="number of workers for dataloader"
+    )
+    parser.add_argument("--aug", type=bool, default=True)
 
     return parser.parse_args()
 
@@ -121,14 +124,14 @@ def main():
         NAME = NAME + "_LEmb"
         from data.my_datastes import MyDataSet_woEmb as MyDataSet
     else:
-        from data.my_datastes import MyDataSet
+        from data.my_datastes import ExtraDataset
 
     model, optimizer, lr_scheduler, NAME, learn_rate = build_model(
         parser_args, device, NAME
     )
 
     training_loader, validing_loader, testing_loader, testing_loader_mini = (
-        build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet)
+        build_dataloaders(parser_args, to_dict_params, F_MASK, ExtraDataset)
     )
 
     # --- 训练核心逻辑 (取代 fit) ---
@@ -155,11 +158,12 @@ def main():
             training_loader.dataset.base_dataset.regen_data()
             validing_loader.dataset.base_dataset.regen_data()
 
-        v_loss, t_loss, t_acc = evaluate_loader(
+        v_loss, t_loss, v_acc, t_acc = evaluate_loader(
             model, validing_loader, testing_loader_mini, device
         )
         loss_record["vaild"].append(v_loss)
         loss_record["test"].append(t_loss)
+        loss_record["v_acc"].append(v_acc)
         loss_record["acc"].append(t_acc)
         plot_loss(loss_record, f"{NAME}_{now}")
 
@@ -177,7 +181,7 @@ def main():
             )
 
         print(
-            f"Epoch {epoch+1}/{parser_args.max_epoch} - loss: {train_loss:.4f}, v_loss: {v_loss:.4f}, t_mini_loss: {t_loss:.4f}, t_mini_acc: {t_acc:.4f}"
+            f"Epoch {epoch+1}/{parser_args.max_epoch} - loss: {train_loss:.4f}, v_loss: {v_loss:.4f}, v_acc: {v_acc:.4f}, t_mini_loss: {t_loss:.4f}, t_mini_acc: {t_acc:.4f}"
         )
 
         # 5. 定期保存

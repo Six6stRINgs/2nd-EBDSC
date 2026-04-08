@@ -105,7 +105,7 @@ def evaluate_loader(model, validing_loader, testing_loader_mini, device):
     """单周期验证过程"""
     v_loss, v_acc = evaluate_epoch(model, validing_loader, device, criterion)
     t_loss, t_acc = evaluate_epoch(model, testing_loader_mini, device, criterion)
-    return v_loss, t_loss, t_acc
+    return v_loss, t_loss, v_acc, t_acc
 
 
 def test_final(model, loaders_dict, device, NAME, now):

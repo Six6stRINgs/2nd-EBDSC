@@ -3,16 +3,23 @@ import torch.utils.data as Data
 import numpy as np
 
 
-class MyDataSet(Data.Dataset):
+class ExtraDataset(Data.Dataset):
     """自定义数据集函数"""
 
-    def __init__(self, base_dataset, hard=None, pos_d=128, if_emb=True, f_mask=lambda x: torch.rand_like(x) * 2 - 1):
-        super(MyDataSet, self).__init__()
+    def __init__(
+        self,
+        base_dataset,
+        hard=None,
+        pos_d=128,
+        if_emb=True,
+        f_mask=lambda x: torch.rand_like(x) * 2 - 1,
+    ):
+        super(ExtraDataset, self).__init__()
         self.base_dataset = base_dataset
-        
+
         if not if_emb:
             return
-        
+
         self.d_model = pos_d
         self.d_step = 8
         # mod_max = 65536 = 2**N 因为满足 2 ** (N*d_step/d_model) == 2
@@ -20,29 +27,29 @@ class MyDataSet(Data.Dataset):
         # div_term
         # self.div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)).to(device)
         # self.div_term = (1. / (65536 ** (torch.arange(0, d_model, 2) / d_model))).to(device)
-        self.div_term = (
-            1. / (mod_max ** (torch.arange(0, self.d_model, self.d_step) / self.d_model)))
+        self.div_term = 1.0 / (
+            mod_max ** (torch.arange(0, self.d_model, self.d_step) / self.d_model)
+        )
         # mod_d = lambda d: mod_max ** (np.floor(d/d_step)*d_step / d_model)
         # 根据 mod 查维度，上界 <
-        self.d_mod = lambda m: np.floor(
-            self.d_step * np.log2(m)).astype(np.int64) + 1
+        self.d_mod = lambda m: np.floor(self.d_step * np.log2(m)).astype(np.int64) + 1
         self.hard = hard
 
         # def f_mask(x): return torch.mean(x, axis=0)
         # f_mask = lambda x: torch.rand_like(x) * 2 - 1
         # f_mask = lambda x: torch.zeros_like(x)
         self.f_mask = f_mask
-        
+
     def __len__(self):
         return len(self.base_dataset)
 
     def __getitem__(self, idx):
         inputs, target = self.base_dataset[idx]
-        
-        if not hasattr(self, 'd_model'):
+
+        if not hasattr(self, "d_model"):
             # 除第一个维度，每一个维度正则化
             inputs = (inputs - inputs.mean(axis=0)) / (inputs.std(axis=0) + 1e-8)
-            inputs[:, 0] = ( inputs[:, 0] / 5e5  - 0.0002) / 0.0005
+            inputs[:, 0] = (inputs[:, 0] / 5e5 - 0.0002) / 0.0005
             return inputs, target
 
         # * POS [1024, 5] -> [1024, 5, 128]
@@ -56,8 +63,9 @@ class MyDataSet(Data.Dataset):
         # pe[:, :, 1::2] = torch.cos(positions * self.div_term * torch.pi)
 
         for i in range(self.d_step):
-            pe[:, :, i::self.d_step] = (
-                positions * self.div_term + 1 / self.d_step * i) % 1 * 2 - 1
+            pe[:, :, i :: self.d_step] = (
+                positions * self.div_term + 1 / self.d_step * i
+            ) % 1 * 2 - 1
             # # linearV
             # pe[:, :, i::self.d_step] = torch.absolute((positions * self.div_term + 1 / self.d_step * i) % 1 - 0.5) * 2 - 1
 
@@ -85,7 +93,7 @@ class MyDataSet(Data.Dataset):
         return pe, target
 
 
-class MyDataSet_woEmb(MyDataSet):
+class MyDataSet_woEmb(ExtraDataset):
     """自定义数据集函数"""
 
     def __init__(self, inputs, targets, hard=None, pos_d=128, f_mask=None):

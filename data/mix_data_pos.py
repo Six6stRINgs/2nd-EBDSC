@@ -332,6 +332,9 @@ class PosMixDatasetCache(Data.Dataset):
 
     def regen_data(self):
         if self.is_sequential:
+            if not isinstance(self.df_list, list):
+                self.df_list = [self.df_list]
+            
             # 顺序生成测试数据窗 (针对完整的 df_list 进行滑动窗切片)
             windows = []
             for df in self.df_list:

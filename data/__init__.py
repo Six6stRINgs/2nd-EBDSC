@@ -1,6 +1,7 @@
 from .mix_data_pos import read_dfs, split_label, PosMixDatasetCache
 import torch.utils.data as Data
 
+
 def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
     df_list, test_df_list = read_dfs()
     test_df_split_list = (
@@ -14,6 +15,7 @@ def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
         df_list,
         100,
         100,
+        is_sequential=(not parser_args.aug),
         is_test=False,
         if_mix_test=parser_args.mix_test,
         test_df_split_list=test_df_split_list,
@@ -24,9 +26,21 @@ def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
         df_list,
         20,
         50,
+        is_sequential=(not parser_args.aug),
         is_test=False,
         if_mix_test=parser_args.mix_test,
         test_df_split_list=test_df_split_list,
+        **to_dict_params,
+    )
+
+    d_test_base = PosMixDatasetCache(test_df_list, is_sequential=True, **to_dict_params)
+
+    d_test_mini_base = PosMixDatasetCache(
+        test_df_list[2],
+        20,
+        50,
+        is_sequential=(not parser_args.aug),
+        is_test=True,
         **to_dict_params,
     )
 
@@ -46,16 +60,12 @@ def build_dataloaders(parser_args, to_dict_params, F_MASK, MyDataSet):
     )
 
     # Test Loaders
-    d_test_base = PosMixDatasetCache(test_df_list, is_sequential=True, **to_dict_params)
     testing_loader = Data.DataLoader(
         MyDataSet(d_test_base, hard=None),
         batch_size=parser_args.batch_size,
         shuffle=True,
     )
 
-    d_test_mini_base = PosMixDatasetCache(
-        test_df_list[2], 20, 50, is_test=True, **to_dict_params
-    )
     testing_loader_mini = Data.DataLoader(
         MyDataSet(d_test_mini_base, hard=None),
         batch_size=parser_args.batch_size,
