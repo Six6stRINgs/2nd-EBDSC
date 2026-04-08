@@ -122,9 +122,9 @@ def main():
 
     if parser_args.learnable_emb:
         NAME = NAME + "_LEmb"
-        from data.my_datastes import MyDataSet_woEmb as MyDataSet
+        from data.dataset import ExtraDataset_woEmb as ExtraDataset
     else:
-        from data.my_datastes import ExtraDataset
+        from data.dataset import ExtraDataset
 
     model, optimizer, lr_scheduler, NAME, learn_rate = build_model(
         parser_args, device, NAME
