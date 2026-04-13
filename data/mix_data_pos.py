@@ -1,16 +1,51 @@
+import platform
+import random
+from typing import List, Tuple
+
 import numpy as np
 import pandas as pd
-from typing import List, Tuple
-from joblib import Parallel, delayed
-import random
 import torch
 import torch.utils.data as Data
+from joblib import Parallel, delayed
 
 # 全局常量
 TAG_LEN = 12
 WINDOW_SIZE = 1024
-DATASET_DIR = "/root/autodl-tmp/datasets/extra"
-DATA_NAME = "PosAll"  # 默认名称，可在调用处动态修改或通过参数传递
+
+if platform.system() == "Windows":
+    DATASET_DIR = "F:/datasets/extra"
+else:
+    DATASET_DIR = "/root/autodl-tmp/datasets/extra"
+DATA_NAME = "PosAll"  # 默认名称，可在调用处动态修改或通过参数传递，可选项：[PosAll, PosAllManualInterleavePRI, PosAllPRI]
+
+
+def configure_data_globals(
+    tag_len: int = None,
+    window_size: int = None,
+    dataset_dir: str = None,
+    data_name: str = None,
+):
+    """允许运行时从外部覆盖数据模块的全局配置。"""
+    global TAG_LEN, WINDOW_SIZE, DATASET_DIR, DATA_NAME
+
+    if tag_len is not None:
+        TAG_LEN = tag_len
+    if window_size is not None:
+        WINDOW_SIZE = window_size
+    if dataset_dir is not None:
+        DATASET_DIR = dataset_dir
+    if data_name is not None:
+        DATA_NAME = data_name
+
+
+def get_data_globals():
+    """返回当前数据模块使用中的全局配置。"""
+    return {
+        "TAG_LEN": TAG_LEN,
+        "WINDOW_SIZE": WINDOW_SIZE,
+        "DATASET_DIR": DATASET_DIR,
+        "DATA_NAME": DATA_NAME,
+    }
 
 
 def read_txt(filepath):

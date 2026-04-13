@@ -1,4 +1,10 @@
-from .mix_data_pos import read_dfs, split_label, PosMixDatasetCache
+from .mix_data_pos import (
+    read_dfs,
+    split_label,
+    PosMixDatasetCache,
+    configure_data_globals,
+    get_data_globals,
+)
 import torch.utils.data as Data
 
 
