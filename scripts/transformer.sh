@@ -1,0 +1,1 @@
+python main.py --model transformer --batch_size 25 --learnable_emb

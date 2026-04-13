@@ -99,13 +99,13 @@ class TimesBlock(nn.Module):
         return res
 
 
-class BiLSTM(nn.Module):
+class TimesNet(nn.Module):
     """
     Paper link: https://openreview.net/pdf?id=ju_Uqw384Oq
     """
 
     def __init__(self, configs: Configs = None, wide_value_emb=False):
-        super(BiLSTM, self).__init__()
+        super(TimesNet, self).__init__()
         if configs is None:
             configs = Configs()
 

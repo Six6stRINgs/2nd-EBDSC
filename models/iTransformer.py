@@ -27,13 +27,13 @@ class Configs:
         self.num_class = 12
 
 
-class BiLSTM(nn.Module):
+class iTransformer(nn.Module):
     """
     Paper link: https://arxiv.org/abs/2310.06625
     """
 
     def __init__(self, configs=None, wide_value_emb=False):
-        super(BiLSTM, self).__init__()
+        super(iTransformer, self).__init__()
         if configs is None:
             configs = Configs()
         self.wide_value_emb = wide_value_emb
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     # model = Model(wide_value_emb=True).cuda()
 
     input = torch.rand(10, 1024, 5).cuda()
-    model = BiLSTM(wide_value_emb=False).cuda()
+    model = iTransformer(wide_value_emb=False).cuda()
 
     print("模型参数量：", sum(p.numel() for p in model.parameters() if p.requires_grad))
 

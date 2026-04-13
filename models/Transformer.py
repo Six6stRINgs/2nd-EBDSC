@@ -33,7 +33,7 @@ class Configs:
         self.num_class = 12
 
 
-class BiLSTM(nn.Module):
+class Transformer(nn.Module):
     """
     Vanilla Transformer
     with O(L^2) complexity
@@ -41,7 +41,7 @@ class BiLSTM(nn.Module):
     """
 
     def __init__(self, configs: Configs = None, wide_value_emb=False):
-        super(BiLSTM, self).__init__()
+        super(Transformer, self).__init__()
         if configs is None:
             configs = Configs()
         self.wide_value_emb = wide_value_emb
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     # 对应的参数含义为 M, L, T, 4 个序列特征，96 原输入长度 96，预测输出长度为 192
     # input = torch.rand(10, 1024, 5, 128).cuda()
     input = torch.rand(10, 1024, 5).cuda()
-    model = BiLSTM().cuda()
+    model = Transformer().cuda()
 
     print("模型参数量：", sum(p.numel() for p in model.parameters() if p.requires_grad))
 

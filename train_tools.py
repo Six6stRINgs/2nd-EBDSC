@@ -1,21 +1,26 @@
 import numpy as np
-from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
+from tqdm import tqdm
 
-# Explicit imports
-from my_tools import (
-    confusion_matrix,
-    accuracy_score,
-)
+from my_tools import accuracy_score, confusion_matrix
 
 
-def criterion(outputs: torch.FloatTensor, targets: torch.FloatTensor):
-    return nn.CrossEntropyLoss()(outputs.view(-1, 12), targets.view(-1))
+def criterion(outputs: torch.FloatTensor, targets: torch.FloatTensor, num_classes: int = 12):
+    return nn.CrossEntropyLoss()(outputs.view(-1, num_classes), targets.view(-1))
 
 
-def train_epoch(model, optimizer, training_loader, device, scaler, epoch_idx):
+def train_epoch(
+    model,
+    optimizer,
+    training_loader,
+    device,
+    scaler,
+    epoch_idx,
+    num_classes: int = 12,
+    amp_enabled: bool = True,
+):
     """单周期训练过程，包含 Batch 级别的 tqdm 进度条"""
     model.train()
     running_loss = 0.0
@@ -30,9 +35,9 @@ def train_epoch(model, optimizer, training_loader, device, scaler, epoch_idx):
         inputs, labels = data[0].to(device), data[-1].to(device)
         optimizer.zero_grad()
 
-        with autocast():
+        with autocast(enabled=amp_enabled):
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels, num_classes=num_classes)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -44,7 +49,15 @@ def train_epoch(model, optimizer, training_loader, device, scaler, epoch_idx):
     return running_loss / len(training_loader)
 
 
-def evaluate_epoch(model, dataloader, device, criterion, return_preds=False):
+def evaluate_epoch(
+    model,
+    dataloader,
+    device,
+    criterion_fn,
+    return_preds=False,
+    desc=None,
+    num_classes: int = 12,
+):
     """通用的单 loader 验证/测试接口，返回 loss 和 acc (以及 可选的 predictions, targets)"""
     model.eval()
     loss = 0.0
@@ -57,7 +70,7 @@ def evaluate_epoch(model, dataloader, device, criterion, return_preds=False):
         pbar = tqdm(
             enumerate(dataloader),
             total=len(dataloader),
-            desc=f"Evaluate",
+            desc=f"Evaluate {desc}" if desc else "Evaluate",
             leave=False,
             dynamic_ncols=True,
         )
@@ -65,18 +78,16 @@ def evaluate_epoch(model, dataloader, device, criterion, return_preds=False):
             inputs, labels = data[0].to(device), data[-1].to(device)
             output = model(inputs)
 
-            # 计算准确率
-            batch_preds_raw = torch.argmax(output.view(-1, 12), dim=-1)
+            batch_preds_raw = torch.argmax(output.view(-1, num_classes), dim=-1)
             batch_labels_raw = labels.view(-1)
             correct_total += (batch_preds_raw == batch_labels_raw).sum().item()
             sample_total += batch_labels_raw.numel()
 
-            # 存储以进行最终统计
             preds = batch_preds_raw.detach().cpu().numpy()
             predictions.append(preds)
             targets.append(batch_labels_raw.detach().cpu().numpy())
 
-            batch_loss = criterion(output, labels).item()
+            batch_loss = criterion_fn(output, labels, num_classes=num_classes).item()
             loss += batch_loss
 
             pbar.set_postfix(
@@ -101,24 +112,45 @@ def evaluate_epoch(model, dataloader, device, criterion, return_preds=False):
     return loss, acc
 
 
-def evaluate_loader(model, validing_loader, testing_loader_mini, device):
-    """单周期验证过程"""
-    v_loss, v_acc = evaluate_epoch(model, validing_loader, device, criterion)
-    t_loss, t_acc = evaluate_epoch(model, testing_loader_mini, device, criterion)
-    return v_loss, t_loss, v_acc, t_acc
-
-
-def test_final(model, loaders_dict, device, NAME, now):
+def test_final(
+    model,
+    loaders_dict,
+    path,
+    device,
+    name,
+    now,
+    num_classes: int = 12,
+    tag_len: int = 12,
+    figures_dir: str = "saved_figs",
+    checkpoint_dir: str = "saved_models",
+    logger=None,
+):
     """训练完成后的最终验证过程"""
-    path = f"./saved_models/{NAME}_{now}_mloss.pth"
-    print(f"Loading best model from {path} for final evaluation...")
-    checkpoint = torch.load(path)
+    load_line = f"Loading best model from {path} for final evaluation..."
+    print(load_line)
+    if logger is not None:
+        logger.log(load_line)
+    checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
 
-    for name, loader in loaders_dict.items():
+    for loader_name, loader in loaders_dict.items():
         loss, acc, preds, targets = evaluate_epoch(
-            model, loader, device, criterion, return_preds=True
+            model,
+            loader,
+            device,
+            criterion,
+            return_preds=True,
+            num_classes=num_classes,
         )
-        print(f"[{name}] Final Average loss: {loss:.4f}, Acc: {acc:.4f}")
-        confusion_matrix(preds, targets, f"{NAME}_{now}_{name}_mloss{loss:.3f}")
+        final_eval_line = f"[{loader_name}] Final Average loss: {loss:.4f}, Acc: {acc:.4f}"
+        print(final_eval_line)
+        if logger is not None:
+            logger.log(final_eval_line)
+        confusion_matrix(
+            preds,
+            targets,
+            f"{name}_{now}_{loader_name}_mloss{loss:.3f}",
+            tag_len=tag_len,
+            output_dir=figures_dir,
+        )

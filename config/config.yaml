@@ -1,0 +1,130 @@
+cli_overrides:
+  - runtime.cuda
+  - paths.dataset_dir
+  - experiment.data_name
+  - experiment.model_name
+  - train.batch_size
+  - optimizer.lr
+  - train.max_epoch
+  - runtime.seed
+  - runtime.num_workers
+  - experiment.mix_test
+  - experiment.learnable_emb
+  - experiment.manual
+  - experiment.pri
+
+task:
+  num_classes: 12
+  num_features: 5
+  tag_len: 12
+  window_size: 1024
+
+paths:
+  dataset_dir: /root/autodl-tmp/datasets/extra
+  saved_models_dir: ./saved_models
+  saved_figs_dir: ./saved_figs
+
+runtime:
+  seed: 3407
+  cuda: 0
+  num_workers: 4
+  use_amp: true
+  omp_num_threads: 1
+
+experiment:
+  model_name: bilstm
+  data_name: null
+  mix_test: false
+  learnable_emb: false
+  manual: false
+  pri: false
+
+train:
+  max_epoch: 100
+  batch_size: 50
+  regen_interval: 999
+  save_every: 50
+  best_ckpt_metric: test_loss
+
+optimizer:
+  name: adamw
+  lr: 0.0004
+  weight_decay: 0.0
+
+scheduler:
+  name: step
+  step_size: 50
+  gamma: 0.5
+  lambda_warmup_steps: 50
+
+model:
+  d_model: 128
+  d_ff: null
+  n_heads: 8
+  num_layers: 24
+  dropout: 0.5
+  ratio: 2
+  large_kernel_size: 51
+  small_kernel_size: 5
+  auto_scale_d_model: true
+  bilstm_hidden_proj_dim: 256
+
+data_builder:
+  train_size_1: 100
+  train_size_2: 100
+  valid_size_1: 20
+  valid_size_2: 50
+  test_mini_size_1: 20
+  test_mini_size_2: 50
+  pin_memory: true
+  shuffle_train: true
+  shuffle_eval: true
+  mix_n_jobs: -1
+
+augmentation:
+  enabled: true
+  cut_len: 5.0
+  sample_ratio: null
+  drop_sig_ratio: 0.99
+  time_scale_mean: 1.0
+  time_scale_std: 0.2
+  time_scale_clip: [0.5, 2.0]
+  time_shift_exp_scale: 1.0
+
+feature_transform:
+  noise: 1.0
+  noise_snr: null
+  rf_mod: 100
+  pw_mod: 10
+  doa_mod: 90
+  rf_scale_range: [0.2, 2.0]
+  pw_scale_range: [0.5, 2.0]
+  rf_offset_std: 200.0
+  pw_offset_std: 10.0
+  global_rf_shift_range: [-1000.0, 1000.0]
+  global_pw_shift_range: [-10.0, 10.0]
+  global_doa_shift_range: [-60.0, 60.0]
+  toa_scale: 500000.0
+  pri_bias: 0.0002
+  pri_scale: 0.0005
+  pw_multiplier: 10.0
+
+wide_value_embedding:
+  pos_d: 128
+  d_step: 8
+  mod_max: 65536
+  norm_eps: 1.0e-8
+  toa_rescale_divisor: 500000.0
+  toa_rescale_bias: 0.0002
+  toa_rescale_scale: 0.0005
+
+masking:
+  hard_ratio: 80
+  strategy: r
+  rf_prob: 1.0
+  pw_prob: 1.0
+  pa_prob: 0.1
+  doa_prob: 0.5
+  rf_mask_range: [5, 60]
+  pw_mask_range: [6, 100]
+  doa_mask_range: [6, 14]

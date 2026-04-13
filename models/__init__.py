@@ -1,129 +1,184 @@
 import torch
 
 
-def build_model(parser_args, device, NAME):
-    # 基础超参数从 parser_args 获取
-    D = parser_args.d_model
-    learning_rate = parser_args.lr
-    
-    # 如果用户没有显式指定 d_model (即使用默认值 128)，则保留原有的自动倍增逻辑以兼顾兼容性
-    auto_d = (parser_args.d_model == 128)
+def build_model(config, device, name):
+    model_cfg = config.model
+    experiment_cfg = config.experiment
+    optimizer_cfg = config.optimizer
+    scheduler_cfg = config.scheduler
+    task_cfg = config.task
+    wide_cfg = config.wide_value_embedding
 
-    model_type = parser_args.model.lower()
+    d_model = model_cfg.d_model
+    learning_rate = optimizer_cfg.lr
+    auto_d = model_cfg.auto_scale_d_model
+    model_type = experiment_cfg.model_name.lower()
+
+    wide_value_dim = wide_cfg.pos_d * task_cfg.num_features
+    learnable_emb_dim = wide_cfg.pos_d * 2
 
     if model_type == "moderntcn":
-        NAME = f"TCN_{parser_args.ls}KS{parser_args.ss}_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
+        name = (
+            f"TCN_{model_cfg.large_kernel_size}KS{model_cfg.small_kernel_size}_"
+            f"{d_model}D{model_cfg.num_layers}L{model_cfg.ratio}R{model_cfg.dropout*10:.0f}dp_{name}"
+        )
         from .ModernTCN import ModernTCN
 
         model = ModernTCN(
-            5,
-            12,
-            D=D,
-            ffn_ratio=parser_args.ratio,
-            num_layers=parser_args.num_layers,
-            large_sizes=parser_args.ls,
-            small_size=parser_args.ss,
+            task_cfg.num_features,
+            task_cfg.num_classes,
+            D=d_model,
+            ffn_ratio=model_cfg.ratio,
+            num_layers=model_cfg.num_layers,
+            large_sizes=model_cfg.large_kernel_size,
+            small_size=model_cfg.small_kernel_size,
             backbone_dropout=0.0,
-            head_dropout=parser_args.dp,
-            stem=parser_args.learnable_emb,
+            head_dropout=model_cfg.dropout,
+            stem=experiment_cfg.learnable_emb,
         ).to(device)
 
     elif model_type == "bilstm":
         from .BiLSTM import BiLSTM, Configs
 
         configs = Configs()
-        configs.e_layers = parser_args.num_layers
-        configs.dropout = parser_args.dp
-        
+        configs.e_layers = model_cfg.num_layers
+        configs.dropout = model_cfg.dropout
+        configs.num_classes = task_cfg.num_classes
+        configs.dim = model_cfg.bilstm_hidden_proj_dim
+
         if auto_d:
-            if not parser_args.learnable_emb:
-                D = 128 * 5
-            else:
-                D = 128 * 2
-        
-        configs.d_model = D
-        NAME = f"BiLSTM_{D}D{parser_args.num_layers}L{parser_args.dp*10:.0f}dp_{NAME}"
-        model = BiLSTM(configs=configs, wide_value_emb=not parser_args.learnable_emb).to(device)
+            d_model = (
+                wide_value_dim
+                if not experiment_cfg.learnable_emb
+                else learnable_emb_dim
+            )
+
+        configs.d_model = d_model
+        name = f"BiLSTM_{d_model}D{model_cfg.num_layers}L{model_cfg.dropout*10:.0f}dp_{name}"
+        model = BiLSTM(
+            configs=configs, wide_value_emb=not experiment_cfg.learnable_emb
+        ).to(device)
 
     elif model_type == "transformer":
-        from .Transformer import BiLSTM, Configs # 注意：原代码这里类名如此
+        from .Transformer import Transformer, Configs
 
         configs = Configs()
-        configs.e_layers = parser_args.num_layers
-        configs.dropout = parser_args.dp
-        
+        configs.e_layers = model_cfg.num_layers
+        configs.dropout = model_cfg.dropout
+        configs.num_class = task_cfg.num_classes
+        configs.enc_in = task_cfg.num_features
+        configs.seq_len = task_cfg.window_size
+
         if auto_d:
-            if not parser_args.learnable_emb:
-                D = 128 * 5
+            if not experiment_cfg.learnable_emb:
+                d_model = wide_value_dim
                 default_n_heads = 4
             else:
-                D = 128 * 2
+                d_model = learnable_emb_dim
                 default_n_heads = 2
         else:
-            default_n_heads = 8 # parser 的默认值
-        
-        configs.d_model = D
-        configs.d_ff = parser_args.d_ff if parser_args.d_ff is not None else D * parser_args.ratio
-        configs.n_heads = parser_args.n_heads if parser_args.n_heads != 8 else default_n_heads
-        
-        NAME = f"TF_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        model = BiLSTM(configs=configs, wide_value_emb=not parser_args.learnable_emb).to(device)
+            default_n_heads = model_cfg.n_heads
+
+        configs.d_model = d_model
+        configs.d_ff = (
+            model_cfg.d_ff if model_cfg.d_ff is not None else d_model * model_cfg.ratio
+        )
+        configs.n_heads = model_cfg.n_heads
+        if auto_d and model_cfg.n_heads == 8:
+            configs.n_heads = default_n_heads
+
+        name = (
+            f"TF_{d_model}D{model_cfg.num_layers}L{model_cfg.ratio}R"
+            f"{model_cfg.dropout*10:.0f}dp_{name}"
+        )
+        model = Transformer(
+            configs=configs, wide_value_emb=not experiment_cfg.learnable_emb
+        ).to(device)
 
     elif model_type == "itransformer":
-        assert parser_args.learnable_emb, "iTransformer 模型必须使用可学习的 emb."
+        assert experiment_cfg.learnable_emb, "iTransformer 模型必须使用可学习的 emb."
         if auto_d:
-            D = 128 * 2
-        
-        NAME = f"iTransformer_{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        from models.iTransformer import BiLSTM, Configs
+            d_model = learnable_emb_dim
+
+        name = (
+            f"iTransformer_{d_model}D{model_cfg.num_layers}L{model_cfg.ratio}R"
+            f"{model_cfg.dropout*10:.0f}dp_{name}"
+        )
+        from models.iTransformer import iTransformer, Configs
 
         configs = Configs()
-        configs.d_model = D
-        configs.e_layers = parser_args.num_layers
-        configs.d_ff = parser_args.d_ff if parser_args.d_ff is not None else configs.d_model * parser_args.ratio
-        configs.dropout = parser_args.dp
-        configs.n_heads = parser_args.n_heads
+        configs.d_model = d_model
+        configs.e_layers = model_cfg.num_layers
+        configs.seq_len = task_cfg.window_size
+        configs.enc_in = task_cfg.num_features
+        configs.d_ff = (
+            model_cfg.d_ff if model_cfg.d_ff is not None else d_model * model_cfg.ratio
+        )
+        configs.dropout = model_cfg.dropout
+        configs.n_heads = model_cfg.n_heads
+        configs.num_class = task_cfg.num_classes
 
-        model = BiLSTM(configs=configs, wide_value_emb=False).to(device)
+        model = iTransformer(configs=configs, wide_value_emb=False).to(device)
 
     elif model_type == "timesnet":
-        assert parser_args.learnable_emb, "TimesNet 模型必须使用可学习的 emb."
+        assert experiment_cfg.learnable_emb, "TimesNet 模型必须使用可学习的 emb."
         if auto_d:
-            D = 128
-        NAME = f"TimesNet_{D}D{parser_args.num_layers}L{parser_args.ratio}R{parser_args.dp*10:.0f}dp_{NAME}"
-        from models.TimesNet import BiLSTM, Configs
+            d_model = wide_cfg.pos_d
+        name = (
+            f"TimesNet_{d_model}D{model_cfg.num_layers}L{model_cfg.ratio}R"
+            f"{model_cfg.dropout*10:.0f}dp_{name}"
+        )
+        from models.TimesNet import TimesNet, Configs
 
         configs = Configs()
-        configs.d_model = D
-        configs.e_layers = parser_args.num_layers
-        configs.d_ff = parser_args.d_ff if parser_args.d_ff is not None else D * parser_args.ratio
-        configs.dropout = parser_args.dp
+        configs.d_model = d_model
+        configs.e_layers = model_cfg.num_layers
+        configs.seq_len = task_cfg.window_size
+        configs.enc_in = task_cfg.num_features
+        configs.d_ff = (
+            model_cfg.d_ff if model_cfg.d_ff is not None else d_model * model_cfg.ratio
+        )
+        configs.dropout = model_cfg.dropout
+        configs.num_class = task_cfg.num_classes
 
-        model = BiLSTM(configs=configs, wide_value_emb=False).to(device)
+        model = TimesNet(configs=configs, wide_value_emb=False).to(device)
     else:
-        raise ValueError(f"Model {parser_args.model} selection error")
+        raise ValueError(f"Model {experiment_cfg.model_name} selection error")
 
-    # --- 统一优化器和调度器创建 ---
-    optimizer_type = parser_args.optimizer.lower()
+    optimizer_type = optimizer_cfg.name.lower()
+    optimizer_kwargs = {"lr": learning_rate, "weight_decay": optimizer_cfg.weight_decay}
     if optimizer_type == "adamw":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(model.parameters(), **optimizer_kwargs)
     elif optimizer_type == "radam":
-        optimizer = torch.optim.RAdam(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.RAdam(model.parameters(), **optimizer_kwargs)
     elif optimizer_type == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.Adam(model.parameters(), **optimizer_kwargs)
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(model.parameters(), **optimizer_kwargs)
 
-    scheduler_type = parser_args.scheduler.lower()
+    scheduler_type = scheduler_cfg.name.lower()
     if scheduler_type == "step":
-        step_size = parser_args.step_size
+        step_size = scheduler_cfg.step_size
         if model_type == "moderntcn":
-             step_size = parser_args.step_size // max(parser_args.batch_size // 50, 1)
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=parser_args.gamma)
+            step_size = scheduler_cfg.step_size // max(config.train.batch_size // 50, 1)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=max(step_size, 1), gamma=scheduler_cfg.gamma
+        )
     elif scheduler_type == "lambda":
-        lr_lambda = lambda step: (D**-0.5) * min((step + 1) ** -0.5, (step + 1) * parser_args.step_size ** -1.5)
+        warmup_steps = scheduler_cfg.lambda_warmup_steps
+
+        def lr_lambda(step):
+            return (d_model**-0.5) * min(
+                (step + 1) ** -0.5,
+                (step + 1) * warmup_steps**-1.5,
+            )
+
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     else:
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=parser_args.step_size, gamma=parser_args.gamma)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=max(scheduler_cfg.step_size, 1),
+            gamma=scheduler_cfg.gamma,
+        )
 
-    return model, optimizer, lr_scheduler, NAME, learning_rate
+    return model, optimizer, lr_scheduler, name, learning_rate

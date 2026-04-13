@@ -8,7 +8,6 @@ import torch
 import torch.utils.data as Data
 from joblib import Parallel, delayed
 
-# 全局常量
 TAG_LEN = 12
 WINDOW_SIZE = 1024
 
@@ -16,7 +15,7 @@ if platform.system() == "Windows":
     DATASET_DIR = "F:/datasets/extra"
 else:
     DATASET_DIR = "/root/autodl-tmp/datasets/extra"
-DATA_NAME = "PosAll"  # 默认名称，可在调用处动态修改或通过参数传递，可选项：[PosAll, PosAllManualInterleavePRI, PosAllPRI]
+DATA_NAME = "PosAll"
 
 
 def configure_data_globals(
@@ -52,7 +51,6 @@ def read_txt(filepath):
     """读取 txt 文件，并以 DataFrame 返回"""
     columns = ["TOA", "RF", "PW", "PA", "DOA", "TAG"]
     df = pd.read_csv(filepath, sep=r"\s+", names=columns)
-    # 数据类型规范
     df["TOA"] = df["TOA"].astype(np.float32)
     df["RF"] = df["RF"].astype(np.float32)
     df["PW"] = df["PW"].astype(np.float32)
@@ -87,29 +85,28 @@ def pre_reshape(
     df: pd.DataFrame,
     sample_ratio: float = None,
     drop_sig_ratio: float = 0.99,
+    cut_len: float = 5.0,
+    time_scale_mean: float = 1.0,
+    time_scale_std: float = 0.2,
     clip_range: Tuple[float, float] = (0.5, 2.0),
+    time_shift_exp_scale: float = 1.0,
 ) -> pd.DataFrame:
     """数据时间尺度上变化，模拟频移等增强"""
-    cut_len = 5
     start = np.random.uniform(df["TOA"].min(), df["TOA"].max())
     df_scaled: pd.DataFrame = df[
         (df["TOA"] >= start) & (df["TOA"] <= start + cut_len)
     ].copy()
 
-    # 随机信号丢失
     if sample_ratio is None:
         df_scaled = df_scaled.sample(frac=np.random.uniform(drop_sig_ratio, 1))
     else:
         df_scaled = df_scaled.sample(frac=sample_ratio)
 
-    # 频移/比例缩放
-    df_scaled["TOA"] *= np.clip(np.random.normal(1, 0.2), *clip_range)
-
-    # 去除原始的 TOA 偏移
+    df_scaled["TOA"] *= np.clip(
+        np.random.normal(time_scale_mean, time_scale_std), *clip_range
+    )
     df_scaled["TOA"] -= df_scaled["TOA"].min()
-
-    # 随机进入时移
-    df_scaled["TOA"] += np.clip(np.random.exponential(1), 0, cut_len)
+    df_scaled["TOA"] += np.clip(np.random.exponential(time_shift_exp_scale), 0, cut_len)
 
     return df_scaled
 
@@ -119,8 +116,22 @@ def to_dict(
     reshap=False,
     mode="default",
     noise=1.0,
-    noise_snr=np.inf,
+    noise_snr=None,
     if_pri=False,
+    rf_mod: int = 100,
+    pw_mod: int = 10,
+    doa_mod: int = 90,
+    rf_scale_range: Tuple[float, float] = (0.2, 2.0),
+    pw_scale_range: Tuple[float, float] = (0.5, 2.0),
+    rf_offset_std: float = 200.0,
+    pw_offset_std: float = 10.0,
+    global_rf_shift_range: Tuple[float, float] = (-1000.0, 1000.0),
+    global_pw_shift_range: Tuple[float, float] = (-10.0, 10.0),
+    global_doa_shift_range: Tuple[float, float] = (-60.0, 60.0),
+    toa_scale: float = 5e5,
+    pri_bias: float = 0.0002,
+    pri_scale: float = 0.0005,
+    pw_multiplier: float = 10.0,
 ):
     """
     数据转换为模型输入格式
@@ -139,11 +150,11 @@ def to_dict(
         noise_vec = np.random.normal(0, np.sqrt(noise_power + 1e-10), len(signal))
         return (signal + noise_vec).astype(np.float32)
 
+    noise_snr = np.inf if noise_snr is None else noise_snr
+
     df = df.copy()
     d_2 = pd.DataFrame()
     d_tag = pd.DataFrame()
-
-    DOA_MOD, RF_MOD, PW_MOD = 90, 100, 10
 
     if reshap:
         for i in range(TAG_LEN):
@@ -151,41 +162,31 @@ def to_dict(
             if not mask.any():
                 continue
 
-            # RF 变换
             di = df.loc[mask, "RF"]
-            scale = np.random.uniform(0.2, 2) * noise
+            scale = np.random.uniform(*rf_scale_range) * noise
             offset = (
-                np.random.uniform(0, RF_MOD)
-                if mode == "manual"
-                else np.random.normal(0, 200)
+                np.random.uniform(0, rf_mod) if mode == "manual" else np.random.normal(0, rf_offset_std)
             ) * noise
             df.loc[mask, "RF"] = scale * (di - di.mean()) + di.mean() + offset
 
-            # PW 变换
             di = df.loc[mask, "PW"]
-            scale = np.random.uniform(0.5, 2) * noise
+            scale = np.random.uniform(*pw_scale_range) * noise
             offset = (
-                np.random.uniform(0, PW_MOD)
-                if mode == "manual"
-                else np.random.normal(0, 10)
+                np.random.uniform(0, pw_mod) if mode == "manual" else np.random.normal(0, pw_offset_std)
             ) * noise
             df.loc[mask, "PW"] = scale * (di - di.mean()) + di.mean() + offset
 
-            # DOA 变换
-            df.loc[mask, "DOA"] += np.random.uniform(0, DOA_MOD) * noise
+            df.loc[mask, "DOA"] += np.random.uniform(0, doa_mod) * noise
 
-            # 增加高斯噪声
             if noise_snr < np.inf:
                 for col in ["RF", "PW", "PA", "DOA"]:
                     df.loc[mask, col] = add_noise(df.loc[mask, col], noise_snr)
 
-        # 整体偏移
         if mode == "default":
-            df["RF"] += np.random.uniform(-1000, 1000) * noise
-            df["PW"] += np.random.uniform(-10, 10) * noise
-            df["DOA"] += np.random.uniform(-60, 60) * noise
+            df["RF"] += np.random.uniform(*global_rf_shift_range) * noise
+            df["PW"] += np.random.uniform(*global_pw_shift_range) * noise
+            df["DOA"] += np.random.uniform(*global_doa_shift_range) * noise
 
-    # 处理噪声 (不需要 reshap==True 也可以加)
     if not reshap and noise_snr < np.inf:
         for i in range(TAG_LEN):
             mask = df["TAG"] == i + 1
@@ -193,28 +194,45 @@ def to_dict(
                 for col in ["RF", "PW", "PA", "DOA"]:
                     df.loc[mask, col] = add_noise(df.loc[mask, col], noise_snr)
 
-    # 特征工程与归一化
     if mode == "manual":
         df["PRI"] = df["TOA"].diff().fillna(0)
-        d_2["PRI"] = (df["PRI"] - 0.0002) / 0.0005
-        d_2["RF"] = mod_normalize(df["RF"], RF_MOD)
-        d_2["PW"] = mod_normalize(df["PW"], PW_MOD)
+        d_2["PRI"] = (df["PRI"] - pri_bias) / pri_scale
+        d_2["RF"] = mod_normalize(df["RF"], rf_mod)
+        d_2["PW"] = mod_normalize(df["PW"], pw_mod)
         d_2["PA"] = normalize(df["PA"])
-        d_2["DOA"] = mod_normalize(df["DOA"], DOA_MOD)
+        d_2["DOA"] = mod_normalize(df["DOA"], doa_mod)
     else:
-        # Default mode (air, PRI, all)
         if if_pri:
-            d_2["PRI"] = df["TOA"].diff().fillna(0) * 5e5
+            d_2["PRI"] = df["TOA"].diff().fillna(0) * toa_scale
         else:
-            d_2["TOA"] = (df["TOA"] - df["TOA"].min()) * 5e5
+            d_2["TOA"] = (df["TOA"] - df["TOA"].min()) * toa_scale
 
         d_2["RF"] = df["RF"]
-        d_2["PW"] = df["PW"] * 10
+        d_2["PW"] = df["PW"] * pw_multiplier
         d_2["PA"] = df["PA"]
-        d_2["DOA"] = df["TOA"]  # 原始代码中 DOA 赋值为 TOA，保持一致
+        d_2["DOA"] = df["TOA"]
 
     d_tag["TAG"] = df["TAG"].astype(np.int32)
     return d_2.values, d_tag.values
+
+
+def _split_pre_reshape_kwargs(kwargs):
+    pre_reshape_keys = {
+        "sample_ratio",
+        "drop_sig_ratio",
+        "cut_len",
+        "time_scale_mean",
+        "time_scale_std",
+        "clip_range",
+        "time_shift_exp_scale",
+    }
+    pre_reshape_kwargs = {
+        key: value for key, value in kwargs.items() if key in pre_reshape_keys
+    }
+    to_dict_kwargs = {
+        key: value for key, value in kwargs.items() if key not in pre_reshape_keys
+    }
+    return pre_reshape_kwargs, to_dict_kwargs
 
 
 def split_label(df: pd.DataFrame) -> List[pd.DataFrame]:
@@ -239,22 +257,12 @@ def _gen_mix_job(
     if test_df_split_list:
         df_list_new = []
         for i in t:
-            candidates = [
-                j for j in [k[i] for k in test_df_split_list] if j.shape[0] > 0
-            ] + [df_list[i]]
+            candidates = [j for j in [k[i] for k in test_df_split_list] if j.shape[0] > 0] + [df_list[i]]
             df_list_new.append(random.sample(candidates, 1)[0])
     else:
         df_list_new = df_list
 
-    # pre_reshape 参数传递可以通过 to_dict_kwargs 提取或另设，这里暂保持现状
-    # 提取 pre_reshape 相关参数
-    pr_kwargs = {}
-    if "sample_ratio" in to_dict_kwargs:
-        pr_kwargs["sample_ratio"] = to_dict_kwargs.pop("sample_ratio")
-    if "drop_sig_ratio" in to_dict_kwargs:
-        pr_kwargs["drop_sig_ratio"] = to_dict_kwargs.pop("drop_sig_ratio")
-    if "clip_range" in to_dict_kwargs:
-        pr_kwargs["clip_range"] = to_dict_kwargs.pop("clip_range")
+    pr_kwargs, dict_kwargs = _split_pre_reshape_kwargs(to_dict_kwargs)
 
     if if_time_reshap:
         df = pd.concat(
@@ -272,7 +280,7 @@ def _gen_mix_job(
         else:
             start = random.randint(0, len(df) - WINDOW_SIZE)
 
-        m2, m3 = to_dict(df[start : start + WINDOW_SIZE], reshap=True, **to_dict_kwargs)
+        m2, m3 = to_dict(df[start : start + WINDOW_SIZE], reshap=True, **dict_kwargs)
         mixed_windows.append([m2, m3])
     return mixed_windows
 
@@ -301,15 +309,14 @@ def mix_data_gen(
 
 
 def _target_domain_job(df: pd.DataFrame, size_2, **to_dict_kwargs):
+    _, dict_kwargs = _split_pre_reshape_kwargs(to_dict_kwargs)
     mixed_windows = []
     for _ in range(size_2):
         if len(df) <= WINDOW_SIZE:
             start = 0
         else:
             start = random.randint(0, len(df) - WINDOW_SIZE)
-        m2, m3 = to_dict(
-            df[start : start + WINDOW_SIZE], reshap=False, **to_dict_kwargs
-        )
+        m2, m3 = to_dict(df[start : start + WINDOW_SIZE], reshap=False, **dict_kwargs)
         mixed_windows.append([m2, m3])
     return mixed_windows
 
@@ -349,6 +356,7 @@ class PosMixDatasetCache(Data.Dataset):
         is_sequential=False,
         if_mix_test=False,
         test_df_split_list=None,
+        n_jobs=-1,
         **to_dict_kwargs,
     ):
         super().__init__()
@@ -359,6 +367,7 @@ class PosMixDatasetCache(Data.Dataset):
         self.is_sequential = is_sequential
         self.if_mix_test = if_mix_test
         self.test_df_split_list = test_df_split_list
+        self.n_jobs = n_jobs
         self.to_dict_kwargs = to_dict_kwargs
 
         self.inputs = None
@@ -366,34 +375,35 @@ class PosMixDatasetCache(Data.Dataset):
         self.regen_data()
 
     def regen_data(self):
+        _, dict_kwargs = _split_pre_reshape_kwargs(self.to_dict_kwargs)
+
         if self.is_sequential:
             if not isinstance(self.df_list, list):
                 self.df_list = [self.df_list]
-            
-            # 顺序生成测试数据窗 (针对完整的 df_list 进行滑动窗切片)
+
             windows = []
             for df in self.df_list:
                 for i in range(0, df.shape[0] - WINDOW_SIZE, WINDOW_SIZE):
-                    m2, m3 = to_dict(
-                        df[i : i + WINDOW_SIZE], reshap=False, **self.to_dict_kwargs
-                    )
+                    m2, m3 = to_dict(df[i : i + WINDOW_SIZE], reshap=False, **dict_kwargs)
                     windows.append([m2, m3])
         elif self.is_test:
-            # 目标域抽样测试数据
             assert not isinstance(self.df_list, list) or isinstance(
                 self.df_list, pd.DataFrame
             ), "is_test assumes a single DataFrame df_list"
             windows = target_domain_data_gen(
-                self.df_list, self.size_1, self.size_2, **self.to_dict_kwargs
+                self.df_list,
+                self.size_1,
+                self.size_2,
+                n_jobs=self.n_jobs,
+                **self.to_dict_kwargs,
             )
         else:
-            # 训练/验证随机抽样打乱数据
             t_list = self.test_df_split_list if self.if_mix_test else None
             windows = mix_data_gen(
                 self.df_list,
                 self.size_1,
                 self.size_2,
-                n_jobs=-1,
+                n_jobs=self.n_jobs,
                 if_time_reshap=True,
                 test_df_split_list=t_list,
                 **self.to_dict_kwargs,
